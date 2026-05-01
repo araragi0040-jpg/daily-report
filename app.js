@@ -19,8 +19,11 @@ function init() {
   el('workDate').value = today;
   el('historyBaseDate').value = today;
 
+  clearSession();
+  showLogin();
+  setLoginMasterLoading(true);
+
   bindEvents();
-  restoreSession();
   loadMasterData();
 
   if (!document.querySelector('.report-row')) {
@@ -45,7 +48,7 @@ function bindEvents() {
 
   el('addRequestBtn').addEventListener('click', addRequestNoFromApp);
 
-  el('loginPin').addEventListener('keydown', (event) => {
+  el('loginName').addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       login();
     }
@@ -83,39 +86,48 @@ function setButtonLoading(id, loading, loadingText) {
   btn.textContent = loading ? loadingText : btn.dataset.defaultText;
 }
 
-function storeSession() {
-  localStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify({
-      token: state.sessionToken,
-      name: state.loginUserName,
-    })
-  );
+function setLoginMasterLoading(loading) {
+  const select = el('loginName');
+  const btn = el('loginBtn');
+
+  if (!select || !btn) return;
+
+  if (loading) {
+    select.innerHTML = '<option value="">読み込み中...</option>';
+    select.disabled = true;
+    btn.disabled = true;
+    return;
+  }
+
+  select.disabled = false;
+  btn.disabled = false;
 }
 
-function restoreSession() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
+function setLoginUnavailable(message) {
+  const select = el('loginName');
+  const btn = el('loginBtn');
 
-    const session = JSON.parse(raw);
-    if (!session || !session.token || !session.name) return;
-
-    state.sessionToken = String(session.token);
-    state.loginUserName = String(session.name);
-
-    el('displayName').textContent = state.loginUserName;
-    showApp();
-  } catch (e) {
-    console.error(e);
-    clearSession();
+  if (select) {
+    select.innerHTML = '<option value="">取得できませんでした</option>';
+    select.disabled = true;
   }
+
+  if (btn) {
+    btn.disabled = true;
+  }
+
+  setMessage('loginMessage', message || '氏名リストを取得できませんでした。');
 }
 
 function clearSession() {
   state.sessionToken = '';
   state.loginUserName = '';
-  localStorage.removeItem(STORAGE_KEY);
+
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 function showApp() {
@@ -131,32 +143,48 @@ function showLogin() {
 function logout(message = '') {
   clearSession();
   state.registeredTotal = 0;
+  state.currentTab = 'report';
+
   el('displayName').textContent = '-';
   el('totalHours').textContent = '0 h';
+  el('loginName').value = '';
+
   showLogin();
+  switchTab('report');
+
   setMessage('loginMessage', message, true);
 }
 
 async function loadMasterData() {
   setMessage('loginMessage', '');
+  setLoginMasterLoading(true);
 
   try {
     const res = await apiGet('master');
     if (!res.ok) {
-      setMessage('loginMessage', res.message || 'マスタデータ取得に失敗しました。');
+      setLoginUnavailable(res.message || 'マスタデータ取得に失敗しました。');
       return;
     }
 
-    loadUserOptions(res.users || []);
+    const users = res.users || [];
+    loadUserOptions(users);
+
     state.requestOptions = res.requestNos || [];
     syncRequestSelectOptions();
+
+    if (users.length === 0) {
+      setLoginUnavailable('有効な利用者が登録されていません。');
+      return;
+    }
+
+    setLoginMasterLoading(false);
 
     if (!document.querySelector('.report-row')) {
       addRow();
     }
   } catch (e) {
     console.error(e);
-    setMessage('loginMessage', buildNetworkErrorMessage_(e));
+    setLoginUnavailable(buildNetworkErrorMessage_(e));
   }
 }
 
@@ -174,13 +202,18 @@ function loadUserOptions(users) {
 
 async function login() {
   const name = el('loginName').value.trim();
-  const pin = el('loginPin').value.trim();
 
   setMessage('loginMessage', '');
+
+  if (!name) {
+    setMessage('loginMessage', '氏名を選択してください。');
+    return;
+  }
+
   setButtonLoading('loginBtn', true, 'ログイン中...');
 
   try {
-    const res = await apiPost('login', { name, pin });
+    const res = await apiPost('login', { name });
     setButtonLoading('loginBtn', false, 'ログイン中...');
 
     if (!res.ok) {
@@ -191,7 +224,6 @@ async function login() {
     state.sessionToken = res.token;
     state.loginUserName = res.name;
 
-    storeSession();
     el('displayName').textContent = state.loginUserName;
     showApp();
 
@@ -730,7 +762,6 @@ async function apiPost(action, payload = {}) {
   const url = new URL(baseUrl);
   url.searchParams.set('action', action);
 
-  // text/plain にしてプリフライトを避けやすくする
   const response = await fetch(url.toString(), {
     method: 'POST',
     headers: {
